@@ -17,6 +17,8 @@
 		A548C40A2408DEF800930049 /* NSKResourceProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A548C4092408DEF800930049 /* NSKResourceProvider.swift */; };
 		A551E3A4240CFAAE00CE7F16 /* NSKExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A551E3A3240CFAAE00CE7F16 /* NSKExtensions.swift */; };
 		A551E3A6240D1AB300CE7F16 /* NSKVideoCaptureController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A551E3A5240D1AB300CE7F16 /* NSKVideoCaptureController.swift */; };
+		F4482C1C2448955600830ABC /* NSKBackgroundTimer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4482C1B2448955600830ABC /* NSKBackgroundTimer.swift */; };
+		F4AD8281246F11D800C31A12 /* NSKVideoEditorHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4AD8280246F11D800C31A12 /* NSKVideoEditorHandler.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +34,8 @@
 		A548C4092408DEF800930049 /* NSKResourceProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSKResourceProvider.swift; sourceTree = "<group>"; };
 		A551E3A3240CFAAE00CE7F16 /* NSKExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSKExtensions.swift; sourceTree = "<group>"; };
 		A551E3A5240D1AB300CE7F16 /* NSKVideoCaptureController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSKVideoCaptureController.swift; sourceTree = "<group>"; };
+		F4482C1B2448955600830ABC /* NSKBackgroundTimer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSKBackgroundTimer.swift; sourceTree = "<group>"; };
+		F4AD8280246F11D800C31A12 /* NSKVideoEditorHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSKVideoEditorHandler.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -72,9 +76,11 @@
 				A548C4032408DB1900930049 /* NSKImageFetcher.swift */,
 				A548C4052408DB3D00930049 /* NSKConfirmationController.swift */,
 				A548C4092408DEF800930049 /* NSKResourceProvider.swift */,
+				F4482C1B2448955600830ABC /* NSKBackgroundTimer.swift */,
+				A548C4072408DC7100930049 /* Media.xcassets */,
 				A551E3A3240CFAAE00CE7F16 /* NSKExtensions.swift */,
 				A51C2E2D240E542F0060A7FC /* NSKViews.swift */,
-				A548C4072408DC7100930049 /* Media.xcassets */,
+				F4AD8280246F11D800C31A12 /* NSKVideoEditorHandler.swift */,
 			);
 			path = NSKCameraController;
 			sourceTree = "<group>";
@@ -164,9 +170,11 @@
 				A551E3A4240CFAAE00CE7F16 /* NSKExtensions.swift in Sources */,
 				A551E3A6240D1AB300CE7F16 /* NSKVideoCaptureController.swift in Sources */,
 				A51C2E2E240E542F0060A7FC /* NSKViews.swift in Sources */,
+				F4482C1C2448955600830ABC /* NSKBackgroundTimer.swift in Sources */,
 				A548C4022408DAEE00930049 /* NSKPhotoLibraryController.swift in Sources */,
 				A548C40A2408DEF800930049 /* NSKResourceProvider.swift in Sources */,
 				A548C4042408DB1900930049 /* NSKImageFetcher.swift in Sources */,
+				F4AD8281246F11D800C31A12 /* NSKVideoEditorHandler.swift in Sources */,
 				A548C4062408DB3D00930049 /* NSKConfirmationController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

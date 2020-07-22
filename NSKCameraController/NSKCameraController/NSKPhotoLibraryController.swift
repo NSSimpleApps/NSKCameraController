@@ -15,7 +15,10 @@ public extension Notification.Name {
 
 class NSKPhotoLibraryController: UICollectionViewController {
     class ImageCell: UICollectionViewCell {
+        static var horizontalInset: CGFloat { return 6 }
+        
         let imageView = UIImageView()
+        let durationLabel = UILabel()
         
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -28,6 +31,16 @@ class NSKPhotoLibraryController: UICollectionViewController {
             self.imageView.rightAnchor.constraint(equalTo: self.contentView.rightAnchor).isActive = true
             self.imageView.topAnchor.constraint(equalTo: self.contentView.topAnchor).isActive = true
             self.imageView.bottomAnchor.constraint(equalTo: self.contentView.bottomAnchor).isActive = true
+            
+            let horizontalInset = Self.horizontalInset
+            self.durationLabel.textColor = .white
+            self.durationLabel.font = UIFont.systemFont(ofSize: 10, weight: .medium)
+            self.durationLabel.text = "00:00"
+            self.durationLabel.translatesAutoresizingMaskIntoConstraints = false
+            self.contentView.addSubview(self.durationLabel)
+            self.durationLabel.rightAnchor.constraint(equalTo: self.contentView.rightAnchor, constant: -horizontalInset).isActive = true
+            self.durationLabel.leftAnchor.constraint(greaterThanOrEqualTo: self.contentView.leftAnchor, constant: horizontalInset).isActive = true
+            self.durationLabel.bottomAnchor.constraint(equalTo: self.contentView.bottomAnchor, constant: -horizontalInset).isActive = true
         }
         required init?(coder aDecoder: NSCoder) {
             fatalError("init(coder:) has not been implemented")
@@ -41,7 +54,7 @@ class NSKPhotoLibraryController: UICollectionViewController {
             }
             
             override func sizeThatFits(_ size: CGSize) -> CGSize {
-                if let text = self.text, text.isEmpty == false {
+                if let text = self.text, text.notEmpty {
                     let minSize: CGFloat = 22
                     switch text.count {
                     case 1:
@@ -69,26 +82,27 @@ class NSKPhotoLibraryController: UICollectionViewController {
         override init(frame: CGRect) {
             super.init(frame: frame)
             
-            let imageView = UIImageView(image: NSKResourceProvider.shadowBorderImage)
-            imageView.translatesAutoresizingMaskIntoConstraints = false
+            let shadowBorderView = UIImageView(image: NSKResourceProvider.shadowBorderImage)
+            shadowBorderView.translatesAutoresizingMaskIntoConstraints = false
             
-            self.contentView.addSubview(imageView)
+            self.contentView.addSubview(shadowBorderView)
             
             let imageSize: CGFloat = 26
-            imageView.topAnchor.constraint(equalTo: self.contentView.topAnchor, constant: 6).isActive = true
-            imageView.rightAnchor.constraint(equalTo: self.contentView.rightAnchor, constant: -6).isActive = true
-            imageView.widthAnchor.constraint(equalToConstant: imageSize).isActive = true
-            imageView.heightAnchor.constraint(equalToConstant: imageSize).isActive = true
+            let horizontalInset = Self.horizontalInset
+            shadowBorderView.topAnchor.constraint(equalTo: self.contentView.topAnchor, constant: horizontalInset).isActive = true
+            shadowBorderView.rightAnchor.constraint(equalTo: self.contentView.rightAnchor, constant: -horizontalInset).isActive = true
+            shadowBorderView.widthAnchor.constraint(equalToConstant: imageSize).isActive = true
+            shadowBorderView.heightAnchor.constraint(equalToConstant: imageSize).isActive = true
             
             self.label.translatesAutoresizingMaskIntoConstraints = false
-            imageView.addSubview(self.label)
+            shadowBorderView.addSubview(self.label)
             
             let offset: CGFloat = 2.5
             
-            self.label.topAnchor.constraint(equalTo: imageView.topAnchor, constant: offset).isActive = true
-            self.label.bottomAnchor.constraint(equalTo: imageView.bottomAnchor, constant: -offset).isActive = true
-            self.label.leftAnchor.constraint(equalTo: imageView.leftAnchor, constant: offset).isActive = true
-            self.label.rightAnchor.constraint(equalTo: imageView.rightAnchor, constant: -offset).isActive = true
+            self.label.topAnchor.constraint(equalTo: shadowBorderView.topAnchor, constant: offset).isActive = true
+            self.label.bottomAnchor.constraint(equalTo: shadowBorderView.bottomAnchor, constant: -offset).isActive = true
+            self.label.leftAnchor.constraint(equalTo: shadowBorderView.leftAnchor, constant: offset).isActive = true
+            self.label.rightAnchor.constraint(equalTo: shadowBorderView.rightAnchor, constant: -offset).isActive = true
         }
         required init?(coder aDecoder: NSCoder) {
             fatalError("init(coder:) has not been implemented")
@@ -104,25 +118,31 @@ class NSKPhotoLibraryController: UICollectionViewController {
         }
     }
     
-    enum Result {
+    enum MediaResult {
         case cancelled
         case assets([PHAsset])
         case asset(PHAsset)
     }
     
-    let maximumNumberOfPhotos: Int
+    let mediaType: NSKCameraController.Source.MediaType
+    let maximumNumberOfAttachments: Int
     let accentColor: UIColor?
-    let commitBlock: (NSKPhotoLibraryController, Result) -> Void
+    let commitBlock: (NSKPhotoLibraryController, MediaResult) -> Void
     let selectButtonTitle: String?
+    let maxNumberOfVideos: Int
     
     private var assets: PHFetchResult<PHAsset>?
     private var selectedIndexPaths: [IndexPath: Int] = [:]
     private var shouldDisplaySettingsPlaceholder = false
     
-    init(maximumNumberOfPhotos: Int, selectButtonTitle: String?, accentColor: UIColor?, commitBlock: @escaping (NSKPhotoLibraryController, Result) -> Void) {
-        self.maximumNumberOfPhotos = maximumNumberOfPhotos
+    init(mediaType: NSKCameraController.Source.MediaType, maximumNumberOfAttachments: Int, selectButtonTitle: String?,
+         accentColor: UIColor?, maxNumberOfVideos: Int,
+         commitBlock: @escaping (NSKPhotoLibraryController, MediaResult) -> Void) {
+        self.mediaType = mediaType
+        self.maximumNumberOfAttachments = maximumNumberOfAttachments
         self.selectButtonTitle = selectButtonTitle
         self.accentColor = accentColor
+        self.maxNumberOfVideos = maxNumberOfVideos
         self.commitBlock = commitBlock
         
         let layout = UICollectionViewFlowLayout()
@@ -138,7 +158,7 @@ class NSKPhotoLibraryController: UICollectionViewController {
     }
     
     private var allowsMultipleSelection: Bool {
-        return self.maximumNumberOfPhotos > 1
+        return self.maximumNumberOfAttachments > 1
     }
     
     override func viewDidLoad() {
@@ -180,7 +200,16 @@ class NSKPhotoLibraryController: UICollectionViewController {
             case .authorized:
                 let options = PHFetchOptions()
                 options.sortDescriptors = [NSSortDescriptor(keyPath: \PHAsset.creationDate, ascending: false)]
-                let assets = PHAsset.fetchAssets(with: .image, options: options)
+                
+                let assets: PHFetchResult<PHAsset>
+                switch sSelf.mediaType {
+                case .image:
+                    assets = PHAsset.fetchAssets(with: .image, options: options)
+                case .video:
+                    assets = PHAsset.fetchAssets(with: .video, options: options)
+                case .imageAndVideo:
+                    assets = PHAsset.fetchAssets(with: options)
+                }
                 
                 DispatchQueue.main.async { [weak sSelf] in
                     guard let ssSelf = sSelf else { return }
@@ -252,6 +281,13 @@ class NSKPhotoLibraryController: UICollectionViewController {
             } else {
                 cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ImageCell", for: indexPath) as! ImageCell
             }
+            let durationText: String?
+            if asset.isVideo {
+                durationText = self.timeString(from: asset.duration)
+            } else {
+                durationText = nil
+            }
+            cell.durationLabel.text = durationText
             
             if case let tag = cell.tag, tag != 0 {
                 PHImageManager.default().cancelImageRequest(PHImageRequestID(tag))
@@ -267,13 +303,38 @@ class NSKPhotoLibraryController: UICollectionViewController {
     }
     
     override func collectionView(_ collectionView: UICollectionView, shouldSelectItemAt indexPath: IndexPath) -> Bool {
+        guard let assets = self.assets else {
+            return false
+        }
         if self.allowsMultipleSelection {
-            if self.selectedIndexPaths.count < self.maximumNumberOfPhotos {
+            let keys = self.selectedIndexPaths.keys
+            if self.selectedIndexPaths.isEmpty || keys.contains(indexPath) {
                 return true
-            } else {
-                if self.selectedIndexPaths[indexPath] == nil {
-                    NotificationCenter.default.post(name: .NSKCameraControllerOverflow, object: self.maximumNumberOfPhotos)
+            }
+            let count = self.selectedIndexPaths.count
+            let nextCount = count + 1
+            if nextCount > self.maximumNumberOfAttachments {
+                NotificationCenter.default.post(name: .NSKCameraControllerOverflow, object: self.maximumNumberOfAttachments)
+                return false
+            }
+            
+            let numberOfVideos = keys.reduce(0) { (result, indexPath) -> Int in
+                if assets.object(at: indexPath.item).isVideo {
+                    return result + 1
+                } else {
+                    return result
+                }
+            }
+            if numberOfVideos > 0 {
+                if nextCount > 5 {
+                    NotificationCenter.default.post(name: .NSKCameraControllerOverflow, object: 5)
                     return false
+                } else {
+                    return true
+                }
+            } else {
+                if assets.object(at: indexPath.item).isVideo {
+                    return numberOfVideos + 1 <= self.maxNumberOfVideos
                 } else {
                     return true
                 }
@@ -327,6 +388,14 @@ class NSKPhotoLibraryController: UICollectionViewController {
         if let appSettings = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(appSettings, options: [:], completionHandler: nil)
         }
+    }
+    
+    private func timeString(from duration: TimeInterval) -> String {
+        let minutes = floor(duration / 60)
+        let seconds = floor(duration - 60 * minutes)
+        let format = "%02.0f"
+        
+        return String(format: format, minutes) + ":" + String(format: format, seconds)
     }
 }
 

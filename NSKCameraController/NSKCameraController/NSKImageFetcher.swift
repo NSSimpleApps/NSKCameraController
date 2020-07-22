@@ -22,7 +22,7 @@ class NSKImageFetcher {
         }
     }
     
-    private static func options(isSynchronous: Bool) -> PHImageRequestOptions {
+    private static func imageOptions(isSynchronous: Bool) -> PHImageRequestOptions {
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = true
@@ -45,32 +45,76 @@ class NSKImageFetcher {
         return targetSize
     }
     
-    static func fetchImage(maximumSize: CGSize?, asset: PHAsset, completion: @escaping (UIImage?) -> Void) {
-        let options = self.options(isSynchronous: false)
+    static func fetchImage(maximumSize: CGSize?, asset: PHAsset, completion: @escaping (Result<UIImage, Error>) -> Void) {
+        let options = self.imageOptions(isSynchronous: false)
         let targetSize = self.targetSize(maximumSize: maximumSize, asset: asset)
         
         PHImageManager.default().requestImage(for: asset, targetSize: targetSize, contentMode: .aspectFill, options: options) { image, _ in
-            completion(image)
+            if let image = image {
+                completion(.success(image))
+            } else {
+                let error = NSError(domain: NSKCameraControllerErrorDomain, code: -1, userInfo: [NSLocalizedDescriptionKey: "Couldn't pick an image."])
+                completion(.failure(error))
+            }
         }
     }
-    static func fetchImages(maximumSize: CGSize?, assets: [PHAsset], completion: @escaping ([UIImage]) -> Void) {
-        DispatchQueue.global().async {
-            let options = self.options(isSynchronous: true)
-            var result: [UIImage] = []
-            
-            for asset in assets {
-                let targetSize = self.targetSize(maximumSize: maximumSize, asset: asset)
-                
-                PHImageManager.default().requestImage(for: asset, targetSize: targetSize, contentMode: .aspectFill, options: options) { image, _ in
-                    if let image = image {
-                        result.append(image)
-                    }
-                }
-            }
+    
+    /// перемещает видео в пользовательскую директорию для редактирования
+    static func fetchVideoUrl(asset: PHAsset, shouldCheckEditing: Bool, completion: @escaping (Result<URL, Error>) -> Void) {
+        self._fetchVideoUrl(asset: asset, shouldCheckEditing: shouldCheckEditing, completion: { (result) in
             DispatchQueue.main.async {
                 completion(result)
             }
-        }
+        })
+    }
+    
+    private static func _fetchVideoUrl(asset: PHAsset, shouldCheckEditing: Bool, completion: @escaping (Result<URL, Error>) -> Void) {
+        let videoOptions = PHVideoRequestOptions()
+        videoOptions.isNetworkAccessAllowed = true
+        videoOptions.deliveryMode = .mediumQualityFormat
+        
+        PHImageManager.default().requestExportSession(forVideo: asset, options: videoOptions, exportPreset: AVAssetExportPresetPassthrough,
+                                                      resultHandler: { (session, _) in
+                                                        if let session = session, let documentDirectory = FileManager.default.documentDirectory {
+                                                            let outputURL = documentDirectory.appendingPathComponent("appercode-video\(Date()).mp4")
+                                                            do {
+                                                                try FileManager.default.removeItem(at: outputURL)
+                                                            } catch {
+                                                                print(error)
+                                                            }
+                                                            session.outputURL = outputURL
+                                                            session.outputFileType = .mp4
+                                                            session.shouldOptimizeForNetworkUse = true
+                                                            session.exportAsynchronously {
+                                                                switch session.status {
+                                                                case .completed:
+                                                                    if shouldCheckEditing {
+                                                                        if UIVideoEditorController.canEditVideo(atPath: outputURL.path) {
+                                                                            completion(.success(outputURL))
+                                                                        } else {
+                                                                            let error = NSError(domain: NSKCameraControllerErrorDomain, code: -1, userInfo: [NSLocalizedDescriptionKey: "Couldn't edit video."])
+                                                                            completion(.failure(error))
+                                                                        }
+                                                                    } else {
+                                                                        completion(.success(outputURL))
+                                                                    }
+                                                                case .failed:
+                                                                    let commonError: Error
+                                                                    if let error = session.error {
+                                                                        commonError = error
+                                                                    } else {
+                                                                        commonError = NSError(domain: NSKCameraControllerErrorDomain, code: -1, userInfo: [NSLocalizedDescriptionKey: "Couldn't export video."])
+                                                                    }
+                                                                    completion(.failure(commonError))
+                                                                default:
+                                                                    break
+                                                                }
+                                                            }
+                                                        } else {
+                                                            let error = NSError(domain: NSKCameraControllerErrorDomain, code: -1, userInfo: [NSLocalizedDescriptionKey: "Couldn't request video."])
+                                                            completion(.failure(error))
+                                                        }
+        })
     }
 }
 

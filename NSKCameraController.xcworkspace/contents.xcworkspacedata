@@ -2,7 +2,7 @@
 <Workspace
    version = "1.0">
    <FileRef
-      location = "group:README.md">
+      location = "group:/Users/home/NSKCameraController/NSKCameraController.podspec">
    </FileRef>
    <FileRef
       location = "group:CHANGELOG.md">
@@ -11,7 +11,7 @@
       location = "group:LICENSE">
    </FileRef>
    <FileRef
-      location = "group:NSKCameraController.podspec">
+      location = "group:README.md">
    </FileRef>
    <FileRef
       location = "group:NSKCameraControllerTest/NSKCameraControllerTest.xcodeproj">

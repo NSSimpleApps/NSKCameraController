@@ -8,36 +8,14 @@
 
 import UIKit
 import AVFoundation
-
+import Photos
 
 private var kInterfaceOrientation: Int8 = 0
 
-extension AVCaptureDevice.FlashMode {
-    func next() -> Self {
-        switch self {
-        case .auto:
-            return .on
-        case .on:
-            return .off
-        case .off:
-            return .auto
-        @unknown default:
-            return .auto
-        }
-    }
-    
-    var flashImage: UIImage? {
-        switch self {
-        case .auto:
-            return NSKResourceProvider.flashAutoImage
-        case .on:
-            return NSKResourceProvider.flashOnImage
-        case .off:
-            return NSKResourceProvider.flashOffImage
-        default:
-            return nil
-        }
-    }
+
+struct NSKVideoCapture {
+    let videoData: Data // данные видео
+    let url: URL // адрес видео
 }
 
 class NSKVideoCameraManager: NSObject {
@@ -45,8 +23,10 @@ class NSKVideoCameraManager: NSObject {
     private var backCameraInput: AVCaptureDeviceInput?
     private var frontCameraInput: AVCaptureDeviceInput?
     private var photoOutput: AVCapturePhotoOutput?
+    private var movieFileOutput: AVCaptureMovieFileOutput?
     private var flashMode: AVCaptureDevice.FlashMode? // если nil - то недоступен в данный момент
     private var imageCapture: ((Result<UIImage, Error>) -> Void)?
+    private var videoCapture: ((Result<NSKVideoCapture, Error>) -> Void)?
     
     private let queue = DispatchQueue(label: "NSKVideoCameraManager")
     
@@ -68,8 +48,10 @@ class NSKVideoCameraManager: NSObject {
             sSelf.backCameraInput = nil
             sSelf.frontCameraInput = nil
             sSelf.photoOutput = nil
+            sSelf.movieFileOutput = nil
             sSelf.flashMode = nil
             sSelf.imageCapture = nil
+            sSelf.videoCapture = nil
             
             let mediaType = AVMediaType.video
             let authorizationStatus = AVCaptureDevice.authorizationStatus(for: mediaType)
@@ -130,6 +112,7 @@ class NSKVideoCameraManager: NSObject {
         } else {
             hasFrontCamera = false
         }
+        
         captureSession.beginConfiguration()
         
         if let backCamera = devices.first(where: { (camera) -> Bool in
@@ -150,14 +133,43 @@ class NSKVideoCameraManager: NSObject {
             }
         }
         
-        let photoOutput = AVCapturePhotoOutput()
+        if let audioDevice = AVCaptureDevice.default(for: .audio) {
+            do {
+                let audioInput = try AVCaptureDeviceInput(device: audioDevice)
+                if captureSession.canAddInput(audioInput) {
+                    captureSession.addInput(audioInput)
+                }
+            } catch {
+                print(error)
+            }
+        }
         
+        let photoOutput = AVCapturePhotoOutput()
         if captureSession.canAddOutput(photoOutput) {
             captureSession.addOutput(photoOutput)
+            self.photoOutput = photoOutput
         }
+        
+        let movieFileOutput = AVCaptureMovieFileOutput()
+        if captureSession.canAddOutput(movieFileOutput) {
+            if let connection = movieFileOutput.connection(with: .video) {
+                if #available(iOS 11.0, *) {
+                    if movieFileOutput.availableVideoCodecTypes.contains(.h264) {
+                        movieFileOutput.setOutputSettings([AVVideoCodecKey: AVVideoCodecType.h264.rawValue], for: connection)
+                    }
+                } else {
+                    if movieFileOutput.availableVideoCodecTypes.contains(AVVideoCodecType(rawValue: AVVideoCodecH264)) {
+                        movieFileOutput.setOutputSettings([AVVideoCodecKey: AVVideoCodecH264], for: connection)
+                    }
+                }
+            }
+            
+            captureSession.addOutput(movieFileOutput)
+            self.movieFileOutput = movieFileOutput
+        }
+        
         captureSession.commitConfiguration()
         
-        self.photoOutput = photoOutput
         self.captureSession = captureSession
         return Configuration(hasFrontCamera: hasFrontCamera, flashMode: self.flashMode)
     }
@@ -257,6 +269,13 @@ class NSKVideoCameraManager: NSObject {
         self.queue.async { [weak self] in
             guard let sSelf = self else { return }
             
+            if let movieFileOutput = sSelf.movieFileOutput {
+                if movieFileOutput.isRecording {
+                    movieFileOutput.stopRecording()
+                    return
+                }
+            }
+            
             if let captureSession = sSelf.captureSession, let photoOutput = sSelf.photoOutput {
                 sSelf.imageCapture = completion
                 let photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey : AVVideoCodecJPEG])
@@ -276,6 +295,36 @@ class NSKVideoCameraManager: NSObject {
                     photoSettings.flashMode = flashMode
                 }
                 photoOutput.capturePhoto(with: photoSettings, delegate: sSelf)
+            }
+        }
+    }
+    
+    func captureVideo(initialOrientation: UIInterfaceOrientation, completion: @escaping (Result<NSKVideoCapture, Error>) -> Void) {
+        self.queue.async { [weak self] in
+            guard let sSelf = self, let movieFileOutput = sSelf.movieFileOutput else { return }
+            
+            guard let directory = FileManager.default.documentDirectory else {
+                return
+            }
+            if movieFileOutput.isRecording {
+                movieFileOutput.stopRecording()
+            } else {
+                sSelf.videoCapture = completion
+                
+                objc_setAssociatedObject(movieFileOutput, &kInterfaceOrientation, NSNumber(value: initialOrientation.rawValue), .OBJC_ASSOCIATION_COPY)
+                //movieFileOutput.maxRecordedDuration = CMTime(seconds: sSelf.maxVideoDuration, preferredTimescale: 1)
+                
+                let path = directory.appendingPathComponent("temp_\(Date()).mov")
+                movieFileOutput.startRecording(to: path, recordingDelegate: sSelf)
+            }
+        }
+    }
+    func stopVideo() {
+        self.queue.async { [weak self] in
+            guard let sSelf = self, let movieFileOutput = sSelf.movieFileOutput else { return }
+            
+            if movieFileOutput.isRecording {
+                movieFileOutput.stopRecording()
             }
         }
     }
@@ -358,51 +407,34 @@ class NSKVideoCameraManager: NSObject {
 
 extension NSKVideoCameraManager: AVCapturePhotoCaptureDelegate {
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photoSampleBuffer: CMSampleBuffer?, previewPhoto previewPhotoSampleBuffer: CMSampleBuffer?, resolvedSettings: AVCaptureResolvedPhotoSettings, bracketSettings: AVCaptureBracketedStillImageSettings?, error: Error?) {
-        if let error = error {
-            self.queue.async { [weak self] in
-                guard let sSelf = self else { return }
-                
-                if let imageCapture = sSelf.imageCapture {
-                    sSelf.imageCapture = nil
-                    DispatchQueue.main.async {
-                        imageCapture(.failure(error))
-                    }
-                }
-            }
-        } else {
-            if let photoSampleBuffer = photoSampleBuffer, let dataImage = AVCapturePhotoOutput.jpegPhotoDataRepresentation(forJPEGSampleBuffer: photoSampleBuffer, previewPhotoSampleBuffer: previewPhotoSampleBuffer),
-                let dataProvider = CGDataProvider(data: dataImage as CFData), let cgImage = CGImage(jpegDataProviderSource: dataProvider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) {
-                let interfaceOrientation: UIInterfaceOrientation
-                if let value = objc_getAssociatedObject(output, &kInterfaceOrientation) as? NSNumber,
-                    let orientation = UIInterfaceOrientation(rawValue: value.intValue) {
-                    interfaceOrientation = orientation
-                } else {
-                    interfaceOrientation = .unknown
-                }
-                let image = Self.image(from: cgImage, interfaceOrientation: interfaceOrientation)
-                
-                self.queue.async { [weak self] in
-                    guard let sSelf = self else { return }
-                    
-                    if let imageCapture = sSelf.imageCapture {
-                        sSelf.imageCapture = nil
-                        
-                        DispatchQueue.main.async {
-                            imageCapture(.success(image))
-                        }
-                    }
+        self.queue.async { [weak self] in
+            guard let sSelf = self, let imageCapture = sSelf.imageCapture else { return }
+            
+            sSelf.imageCapture = nil
+            
+            if let error = error {
+                DispatchQueue.main.async {
+                    imageCapture(.failure(error))
                 }
             } else {
-                let error = NSError(domain: NSKCameraControllerErrorDomain, code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to capture image."])
-                self.queue.async { [weak self] in
-                    guard let sSelf = self else { return }
+                if let photoSampleBuffer = photoSampleBuffer, let dataImage = AVCapturePhotoOutput.jpegPhotoDataRepresentation(forJPEGSampleBuffer: photoSampleBuffer, previewPhotoSampleBuffer: previewPhotoSampleBuffer),
+                    let dataProvider = CGDataProvider(data: dataImage as CFData), let cgImage = CGImage(jpegDataProviderSource: dataProvider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) {
+                    let interfaceOrientation: UIInterfaceOrientation
+                    if let value = objc_getAssociatedObject(output, &kInterfaceOrientation) as? NSNumber,
+                        let orientation = UIInterfaceOrientation(rawValue: value.intValue) {
+                        interfaceOrientation = orientation
+                    } else {
+                        interfaceOrientation = .unknown
+                    }
+                    let image = Self.image(from: cgImage, interfaceOrientation: interfaceOrientation)
                     
-                    if let imageCapture = sSelf.imageCapture {
-                        sSelf.imageCapture = nil
-                        
-                        DispatchQueue.main.async {
-                            imageCapture(.failure(error))
-                        }
+                    DispatchQueue.main.async {
+                        imageCapture(.success(image))
+                    }
+                } else {
+                    let error = NSError(domain: NSKCameraControllerErrorDomain, code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to capture image."])
+                    DispatchQueue.main.async {
+                        imageCapture(.failure(error))
                     }
                 }
             }
@@ -411,35 +443,26 @@ extension NSKVideoCameraManager: AVCapturePhotoCaptureDelegate {
     
     @available(iOS 11.0, *)
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
-        if let error = error {
-            self.queue.async { [weak self] in
-                guard let sSelf = self else { return }
-                
-                if let imageCapture = sSelf.imageCapture {
-                    sSelf.imageCapture = nil
-                    
-                    DispatchQueue.main.async {
-                        imageCapture(.failure(error))
-                    }
+        self.queue.async { [weak self] in
+            guard let sSelf = self, let imageCapture = sSelf.imageCapture else { return }
+            
+            sSelf.imageCapture = nil
+            
+            if let error = error {
+                DispatchQueue.main.async {
+                    imageCapture(.failure(error))
                 }
-            }
-        } else if let cgImage = photo.cgImageRepresentation()?.takeUnretainedValue() {
-            let interfaceOrientation: UIInterfaceOrientation
-            if let i = photo.metadata[kCGImagePropertyOrientation as String] as? Int, let interfaceOrientationValue = UIInterfaceOrientation(rawValue: i) {
-                interfaceOrientation = interfaceOrientationValue
-            } else {
-                interfaceOrientation = .portrait
-            }
-            let image = Self.image(from: cgImage, interfaceOrientation: interfaceOrientation)
-            self.queue.async { [weak self] in
-                guard let sSelf = self else { return }
+            } else if let cgImage = photo.cgImageRepresentation()?.takeUnretainedValue() {
+                let interfaceOrientation: UIInterfaceOrientation
+                if let i = photo.metadata[kCGImagePropertyOrientation as String] as? Int, let interfaceOrientationValue = UIInterfaceOrientation(rawValue: i) {
+                    interfaceOrientation = interfaceOrientationValue
+                } else {
+                    interfaceOrientation = .portrait
+                }
+                let image = Self.image(from: cgImage, interfaceOrientation: interfaceOrientation)
                 
-                if let imageCapture = sSelf.imageCapture {
-                    sSelf.imageCapture = nil
-                    
-                    DispatchQueue.main.async {
-                        imageCapture(.success(image))
-                    }
+                DispatchQueue.main.async {
+                    imageCapture(.success(image))
                 }
             }
         }
@@ -461,22 +484,138 @@ extension NSKVideoCameraManager: AVCapturePhotoCaptureDelegate {
     }
 }
 
+extension NSKVideoCameraManager: AVCaptureFileOutputRecordingDelegate {
+    private func resize(inputURL: URL, interfaceOrientation: UIInterfaceOrientation) -> AVAssetExportSession? {
+        guard let session = AVAssetExportSession(asset: AVAsset(url: inputURL), presetName: AVAssetExportPreset960x540) else {
+            return nil
+        }
+        
+        let asset = session.asset
+        if let videoTrack = asset.tracks(withMediaType: .video).first {
+            let naturalSize = videoTrack.naturalSize
+            let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
+            let renderSize: CGSize
+            
+            switch interfaceOrientation {
+            case .landscapeLeft:
+                let tr = CGAffineTransform(scaleX: -1, y: -1).translatedBy(x: -naturalSize.width, y: -naturalSize.height)
+                layerInstruction.setTransform(tr, at: .zero)
+                renderSize = naturalSize
+            case .landscapeRight:
+                renderSize = naturalSize
+            case .portrait:
+                renderSize = CGSize(width: naturalSize.height, height: naturalSize.width)
+                let tr = CGAffineTransform(rotationAngle: .pi / 2).translatedBy(x: 0, y: -naturalSize.height)
+                layerInstruction.setTransform(tr, at: .zero)
+            default:
+                renderSize = naturalSize
+            }
+            
+            let instruction = AVMutableVideoCompositionInstruction()
+            instruction.timeRange = CMTimeRangeMake(start: .zero, duration: asset.duration)
+            instruction.layerInstructions = [layerInstruction]
+            
+            let videoComposition = AVMutableVideoComposition()
+            videoComposition.renderSize = renderSize
+            videoComposition.instructions = [instruction]
+            videoComposition.frameDuration = videoTrack.minFrameDuration
+            
+            session.videoComposition = videoComposition
+        }
+        
+        let mp4Url = inputURL.deletingLastPathComponent().appendingPathComponent("appercode-resize.mp4")
+        do {
+            try FileManager.default.removeItem(at: mp4Url)
+        } catch {
+            print(error)
+        }
+        
+        session.outputURL = mp4Url
+        session.outputFileType = .mp4
+        session.shouldOptimizeForNetworkUse = true
+        return session
+    }
+    
+    func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
+        self.queue.async { [weak self] in
+            guard let sSelf = self else { return }
+            guard let videoCapture = sSelf.videoCapture else { return }
+            
+            if let nsError = error as NSError?, let result = nsError.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool, result == false {
+                DispatchQueue.main.async {
+                    videoCapture(.failure(nsError))
+                }
+            } else {
+                guard let orientation = objc_getAssociatedObject(output, &kInterfaceOrientation) as? NSNumber, let interfaceOrientation = UIInterfaceOrientation(rawValue: orientation.intValue) else {
+                    return
+                }
+                guard let resizeSession = sSelf.resize(inputURL: outputFileURL, interfaceOrientation: interfaceOrientation) else {
+                    return
+                }
+                
+                resizeSession.exportAsynchronously {
+                    switch resizeSession.status {
+                    case .completed:
+                        do {
+                            let videoOutputURL = resizeSession.outputURL!
+                            let videoData = try Data(contentsOf: videoOutputURL)
+                            let capture = NSKVideoCapture(videoData: videoData, url: videoOutputURL)
+                            
+                            DispatchQueue.main.async {
+                                videoCapture(.success(capture))
+                            }
+                        } catch {
+                            DispatchQueue.main.async {
+                                videoCapture(.failure(error))
+                            }
+                        }
+                    case .failed:
+                        let error = resizeSession.error ?? NSError(domain: NSKCameraControllerErrorDomain, code: -1,
+                                                                   userInfo: [NSLocalizedDescriptionKey: "Failed to resize video."])
+                        DispatchQueue.main.async {
+                            videoCapture(.failure(error))
+                        }
+                    default:
+                        break
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 class NSKVideoCaptureController: UIViewController {
     enum VideoCaptureResult {
         case cancelled
         case image(UIImage)
+        case video(NSKVideoCapture)
         case error(Error)
     }
+    public enum CaptureType {
+        case image, video(/*tipString*/String)
+    }
+    let captureType: CaptureType
     let commitBlock: (NSKVideoCaptureController, VideoCaptureResult) -> Void
+    let isCroppingEnabled: Bool
     
     private let cameraController = NSKVideoCameraManager()
+    private let timer = NSKBackgroundTimer()
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var shouldInvalidatePreviewLayerPosition = true
+    private var verticalCaptureButtonConstraint: [NSLayoutConstraint] = []
+    private var horizontalCaptureButtonConstraint: [NSLayoutConstraint] = []
     
     private var flashButtonTag: Int { return -1001 }
+    private var swapButtonTag: Int { return -1002 }
+    private var timeLabel: UILabel?
+    private var tipLabel: UIView?
     
-    init(commitBlock: @escaping (NSKVideoCaptureController, VideoCaptureResult) -> Void) {
+    init(captureType: CaptureType, isCroppingEnabled: Bool,
+         commitBlock: @escaping (NSKVideoCaptureController, VideoCaptureResult) -> Void) {
+        self.captureType = captureType
         self.commitBlock = commitBlock
+        self.isCroppingEnabled = isCroppingEnabled
         
         super.init(nibName: nil, bundle: nil)
     }
@@ -532,49 +671,61 @@ class NSKVideoCaptureController: UIViewController {
                         guard let ssSelf = sSelf else { return }
                         guard let previewLayer = previewLayer else { return }
                         
+                        let topInset: CGFloat = 16
                         let view = ssSelf.view!
+                        let viewBounds = view.bounds.size
+                        
                         view.layer.insertSublayer(previewLayer, at: 0)
                         ssSelf.previewLayer = previewLayer
-                        ssSelf.invalidatePreviewLayer(previewLayer, size: view.bounds.size)
+                        ssSelf.invalidatePreviewLayer(previewLayer, size: viewBounds)
                         
                         let tapGestureRecognizer = UITapGestureRecognizer(target: ssSelf, action: #selector(ssSelf.handleFocusGesture(_:)))
                         view.addGestureRecognizer(tapGestureRecognizer)
                         /////////////////////////////////////////////////////////////////////
-                        let cropView = NSKCropView(isResizingEnabled: false, isMovingEnabled: false,
-                                                   resizingMode: .saveAspectRatio, shouldDisplayThinBorders: true, minSize: .zero)
-                        cropView.translatesAutoresizingMaskIntoConstraints = false
-                        
-                        view.addSubview(cropView)
-                        cropView.centerXAnchor.constraint(equalTo: view.centerXAnchor).isActive = true
-                        cropView.centerYAnchor.constraint(equalTo: view.centerYAnchor).isActive = true
-                        
-                        cropView.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -32).isActive = true
-                        let w2 = cropView.widthAnchor.constraint(equalTo: view.widthAnchor, constant: -32)
-                        w2.priority = .defaultHigh
-                        w2.isActive = true
-                        
-                        cropView.heightAnchor.constraint(lessThanOrEqualTo: view.heightAnchor, constant: -32).isActive = true
-                        let h2 = cropView.heightAnchor.constraint(equalTo: view.heightAnchor, constant: -32)
-                        h2.priority = w2.priority
-                        h2.isActive = true
-                        
-                        cropView.widthAnchor.constraint(equalTo: cropView.heightAnchor).isActive = true
+                        if ssSelf.isCroppingEnabled {
+                            let cropView = NSKCropView(isResizingEnabled: false, isMovingEnabled: false,
+                                                       resizingMode: .saveAspectRatio, shouldDisplayThinBorders: true, minSize: .zero)
+                            cropView.translatesAutoresizingMaskIntoConstraints = false
+                            
+                            view.addSubview(cropView)
+                            cropView.centerXAnchor.constraint(equalTo: view.centerXAnchor).isActive = true
+                            cropView.centerYAnchor.constraint(equalTo: view.centerYAnchor).isActive = true
+                            
+                            cropView.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -32).isActive = true
+                            let w2 = cropView.widthAnchor.constraint(equalTo: view.widthAnchor, constant: -32)
+                            w2.priority = .defaultHigh
+                            w2.isActive = true
+                            
+                            cropView.heightAnchor.constraint(lessThanOrEqualTo: view.heightAnchor, constant: -32).isActive = true
+                            let h2 = cropView.heightAnchor.constraint(equalTo: view.heightAnchor, constant: -32)
+                            h2.priority = w2.priority
+                            h2.isActive = true
+                            
+                            cropView.widthAnchor.constraint(equalTo: cropView.heightAnchor).isActive = true
+                        }
                         /////////////////////////////////////////////////////////////////////
+                        
+                        let closeButton = ssSelf.createCloseButton()
+                        view.addSubview(closeButton)
+                        closeButton.leftAnchor.constraint(equalTo: view.layoutMarginsGuide.leftAnchor).isActive = true
+                        if #available(iOS 11.0, *) {
+                            closeButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -34).isActive = true
+                        } else {
+                            closeButton.bottomAnchor.constraint(equalTo: ssSelf.bottomLayoutGuide.topAnchor, constant: -34).isActive = true
+                        }
                         
                         if let flashMode = configuration.flashMode {
                             let flashButton = UIButton(type: .system)
                             flashButton.tag = ssSelf.flashButtonTag
                             flashButton.translatesAutoresizingMaskIntoConstraints = false
                             flashButton.setImage(flashMode.flashImage, for: .normal)
-                            flashButton.addTarget(sSelf, action: #selector(ssSelf.toggleFlashModeAction(_:)), for: .touchUpInside)
+                            flashButton.addTarget(ssSelf, action: #selector(ssSelf.toggleFlashModeAction(_:)), for: .touchUpInside)
                             view.addSubview(flashButton)
                             flashButton.rightAnchor.constraint(equalTo: view.layoutMarginsGuide.rightAnchor).isActive = true
                             if #available(iOS 11.0, *) {
-                                let safeAreaLayoutGuide = view.safeAreaLayoutGuide
-                                flashButton.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 16).isActive = true
+                                flashButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: topInset).isActive = true
                             } else {
-                                flashButton.topAnchor.constraint(equalTo: ssSelf.topLayoutGuide.bottomAnchor, constant: 16).isActive = true
-                                
+                                flashButton.topAnchor.constraint(equalTo: ssSelf.topLayoutGuide.bottomAnchor, constant: topInset).isActive = true
                             }
                         }
                         
@@ -582,34 +733,53 @@ class NSKVideoCaptureController: UIViewController {
                         captureButton.translatesAutoresizingMaskIntoConstraints = false
                         captureButton.setImage(NSKResourceProvider.captureButton, for: .normal)
                         captureButton.setImage(NSKResourceProvider.captureButtonHighlighted, for: .highlighted)
-                        captureButton.addTarget(sSelf, action: #selector(ssSelf.captureImageAction(_:)), for: .touchUpInside)
                         view.addSubview(captureButton)
-                        if #available(iOS 11.0, *) {
-                            let safeAreaLayoutGuide = view.safeAreaLayoutGuide
-                            captureButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -16).isActive = true
-                            captureButton.centerXAnchor.constraint(equalTo: safeAreaLayoutGuide.centerXAnchor).isActive = true
+                        
+                        ssSelf.verticalCaptureButtonConstraint = [captureButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+                                                                  captureButton.centerXAnchor.constraint(equalTo: view.layoutMarginsGuide.centerXAnchor)]
+                        ssSelf.horizontalCaptureButtonConstraint = [captureButton.centerYAnchor.constraint(equalTo: view.layoutMarginsGuide.centerYAnchor),
+                                                                    captureButton.rightAnchor.constraint(equalTo: view.layoutMarginsGuide.rightAnchor)]
+                        if viewBounds.height > viewBounds.width {
+                            NSLayoutConstraint.activate(ssSelf.verticalCaptureButtonConstraint)
                         } else {
-                            captureButton.bottomAnchor.constraint(equalTo: ssSelf.bottomLayoutGuide.topAnchor, constant: -16).isActive = true
-                            captureButton.centerXAnchor.constraint(equalTo: view.layoutMarginsGuide.centerXAnchor).isActive = true
+                            NSLayoutConstraint.activate(ssSelf.horizontalCaptureButtonConstraint)
                         }
                         
-                        let closeButton = ssSelf.createCloseButton()
-                        view.addSubview(closeButton)
-                        closeButton.centerYAnchor.constraint(equalTo: captureButton.centerYAnchor).isActive = true
-                        closeButton.leftAnchor.constraint(equalTo: view.layoutMarginsGuide.leftAnchor).isActive = true
+                        switch ssSelf.captureType {
+                        case .image:
+                            captureButton.addTarget(ssSelf, action: #selector(ssSelf.captureMediaAction(_:)), for: .touchUpInside)
+                        case .video(let tip):
+                            captureButton.addTarget(ssSelf, action: #selector(ssSelf.captureVideoAction(_:)), for: .touchDown)
+                            captureButton.addTarget(ssSelf, action: #selector(ssSelf.stopVideoAction(_:)), for: .touchUpInside)
+                            ssSelf.configureTipLabel(tip: tip, captureButton: captureButton)
+                        }
                         
                         if configuration.hasFrontCamera {
                             let swapCameraButton = UIButton(type: .system)
+                            swapCameraButton.tag = ssSelf.swapButtonTag
                             swapCameraButton.translatesAutoresizingMaskIntoConstraints = false
                             swapCameraButton.setImage(NSKResourceProvider.swapCameraImage, for: .normal)
                             swapCameraButton.addTarget(sSelf, action: #selector(ssSelf.swapCameraAction(_:)), for: .touchUpInside)
                             view.addSubview(swapCameraButton)
-                            swapCameraButton.centerYAnchor.constraint(equalTo: captureButton.centerYAnchor).isActive = true
+                            swapCameraButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor).isActive = true
                             swapCameraButton.rightAnchor.constraint(equalTo: view.layoutMarginsGuide.rightAnchor).isActive = true
                         }
                         
                         let pinchGestureRecognizer = UIPinchGestureRecognizer(target: ssSelf, action: #selector(ssSelf.handlePinchGesture(_:)))
                         view.addGestureRecognizer(pinchGestureRecognizer)
+                        
+                        let label = UILabel()
+                        label.textColor = .white
+                        label.translatesAutoresizingMaskIntoConstraints = false
+                        view.addSubview(label)
+                        
+                        label.leftAnchor.constraint(equalTo: view.layoutMarginsGuide.leftAnchor).isActive = true
+                        if #available(iOS 11.0, *) {
+                            label.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: topInset).isActive = true
+                        } else {
+                            label.topAnchor.constraint(equalTo: ssSelf.topLayoutGuide.bottomAnchor, constant: topInset).isActive = true
+                        }
+                        ssSelf.timeLabel = label
                         
                         ssSelf.cameraController.startRunning()
                     }
@@ -645,14 +815,71 @@ class NSKVideoCaptureController: UIViewController {
         }
     }
     
+    private func configureTipLabel(tip: String, captureButton: UIView) {
+        let label = UILabel()
+        label.textColor = .white
+        label.font = UIFont.systemFont(ofSize: 13)
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.text = tip
+        label.translatesAutoresizingMaskIntoConstraints = false
+        
+        let parentLabelView = UIView()
+        parentLabelView.backgroundColor = UIColor(red: CGFloat(92) / 255,
+                                                  green: CGFloat(92) / 255,
+                                                  blue: CGFloat(92) / 255,
+                                                  alpha: 1)
+        parentLabelView.layer.cornerRadius = 2
+        parentLabelView.translatesAutoresizingMaskIntoConstraints = false
+        
+        parentLabelView.addSubview(label)
+        let padding: CGFloat = 4
+        label.leftAnchor.constraint(equalTo: parentLabelView.leftAnchor, constant: padding).isActive = true
+        label.rightAnchor.constraint(equalTo: parentLabelView.rightAnchor, constant: -padding).isActive = true
+        label.topAnchor.constraint(equalTo: parentLabelView.topAnchor, constant: padding).isActive = true
+        label.bottomAnchor.constraint(equalTo: parentLabelView.bottomAnchor, constant: -padding).isActive = true
+        label.widthAnchor.constraint(lessThanOrEqualToConstant: 150).isActive = true
+        
+        let parentView = UIView()
+        parentView.translatesAutoresizingMaskIntoConstraints = false
+        
+        parentView.addSubview(parentLabelView)
+        parentLabelView.leftAnchor.constraint(equalTo: parentView.leftAnchor).isActive = true
+        parentLabelView.rightAnchor.constraint(equalTo: parentView.rightAnchor).isActive = true
+        parentLabelView.topAnchor.constraint(equalTo: parentView.topAnchor).isActive = true
+        
+        let imageView = UIImageView(image: NSKResourceProvider.triangle)
+        imageView.tintColor = parentLabelView.backgroundColor
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        parentView.addSubview(imageView)
+        imageView.topAnchor.constraint(equalTo: parentLabelView.bottomAnchor).isActive = true
+        imageView.centerXAnchor.constraint(equalTo: parentView.centerXAnchor).isActive = true
+        imageView.bottomAnchor.constraint(equalTo: parentView.bottomAnchor).isActive = true
+        
+        if let superview = captureButton.superview {
+            superview.addSubview(parentView)
+            parentView.bottomAnchor.constraint(equalTo: captureButton.topAnchor).isActive = true
+            parentView.centerXAnchor.constraint(equalTo: captureButton.centerXAnchor).isActive = true
+        }
+        self.tipLabel = parentView
+    }
+    
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
         
         guard let previewLayer = self.previewLayer else { return }
         self.shouldInvalidatePreviewLayerPosition = false
+        let isVertical = size.height > size.width
         
         coordinator.animate(alongsideTransition: { (_) in
             self.invalidatePreviewLayer(previewLayer, size: size)
+            if isVertical {
+                NSLayoutConstraint.activate(self.verticalCaptureButtonConstraint)
+                NSLayoutConstraint.deactivate(self.horizontalCaptureButtonConstraint)
+            } else {
+                NSLayoutConstraint.deactivate(self.verticalCaptureButtonConstraint)
+                NSLayoutConstraint.activate(self.horizontalCaptureButtonConstraint)
+            }
         }, completion: { _ in
             self.shouldInvalidatePreviewLayerPosition = true
         })
@@ -694,12 +921,90 @@ class NSKVideoCaptureController: UIViewController {
         })
     }
     
-    @objc private func captureImageAction(_ sender: UIButton) {
+    @objc private func captureVideoAction(_ sender: UIButton) {
+        let tag = 1
+        sender.tag = tag
+        sender.removeTarget(self, action: #selector(self.captureVideoAction(_:)), for: .touchDown)
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let sSelf = self else { return }
+            
+            sender.addTarget(sSelf, action: #selector(sSelf.captureVideoAction(_:)), for: .touchDown)
+            
+            if sender.tag != tag {
+                return
+            }
+            if let tipLabel = sSelf.tipLabel {
+                tipLabel.removeFromSuperview()
+                sSelf.tipLabel = nil
+            }
+            sender.isEnabled = false
+            let flashButton = sSelf.view.viewWithTag(sSelf.flashButtonTag) as? UIButton
+            let isFlashButtonEnabled = flashButton?.isEnabled ?? false
+            
+            let swapButton = sSelf.view.viewWithTag(sSelf.swapButtonTag) as? UIButton
+            let isSwapButtonEnabled = swapButton?.isEnabled ?? false
+            
+            flashButton?.isEnabled = false
+            swapButton?.isEnabled = false
+            
+            if let timeLabel = sSelf.timeLabel {
+                var videoDuration: TimeInterval = 0
+                timeLabel.text = Self.timeString(from: videoDuration)
+                sSelf.timer.start(withPeriod: 1, event: { (sender) in
+                    videoDuration += 1
+                    let timeString = Self.timeString(from: videoDuration)
+                    DispatchQueue.main.async {
+                        timeLabel.text = timeString
+                    }
+                })
+            }
+            
+            sSelf.cameraController.captureVideo(initialOrientation: UIApplication.shared.statusBarOrientation,
+                                                completion: { [weak sSelf] (result) in
+                                                    guard let ssSelf = sSelf else { return }
+                                                    
+                                                    ssSelf.timer.stop()
+                                                    ssSelf.timeLabel?.text = nil
+                                                    
+                                                    let commonCompletion: () -> Void = {
+                                                        sender.tag = 0
+                                                        sender.isEnabled = true
+                                                        flashButton?.isEnabled = isFlashButtonEnabled
+                                                        swapButton?.isEnabled = isSwapButtonEnabled
+                                                    }
+                                                    
+                                                    switch result {
+                                                    case .success(let capture):
+                                                        commonCompletion()
+                                                        ssSelf.commitBlock(ssSelf, .video(capture))
+                                                    case .failure(let error):
+                                                        commonCompletion()
+                                                        ssSelf.commitBlock(ssSelf, .error(error))
+                                                    }
+            })
+        }
+    }
+    @objc private func captureMediaAction(_ sender: UIButton) {
+        self.stopVideo(sender)
+        
         sender.isEnabled = false
+        
+        let flashButton = self.view.viewWithTag(self.flashButtonTag) as? UIButton
+        let isFlashButtonEnabled = flashButton?.isEnabled ?? false
+        
+        let swapButton = self.view.viewWithTag(self.swapButtonTag) as? UIButton
+        let isSwapButtonEnabled = swapButton?.isEnabled ?? false
+        
+        flashButton?.isEnabled = false
+        swapButton?.isEnabled = false
         
         self.cameraController.captureImage(initialOrientation: UIApplication.shared.statusBarOrientation, completion: { [weak self] (result) in
             guard let sSelf = self else { return }
             sender.isEnabled = true
+            flashButton?.isEnabled = isFlashButtonEnabled
+            swapButton?.isEnabled = isSwapButtonEnabled
+            
             switch result {
             case .success(let image):
                 sSelf.commitBlock(sSelf, .image(image))
@@ -707,6 +1012,17 @@ class NSKVideoCaptureController: UIViewController {
                 sSelf.commitBlock(sSelf, .error(error))
             }
         })
+    }
+    
+    @objc private func stopVideoAction(_ sender: UIButton) {
+        self.stopVideo(sender)
+        self.cameraController.stopVideo()
+    }
+    
+    private func stopVideo(_ sender: UIButton) {
+        self.timer.stop()
+        self.timeLabel?.text = nil
+        sender.tag = 0
     }
     
     @objc private func handlePinchGesture(_ sender: UIPinchGestureRecognizer) {
@@ -758,6 +1074,13 @@ class NSKVideoCaptureController: UIViewController {
         closeButton.setImage(NSKResourceProvider.retakeImage, for: .normal)
         closeButton.addTarget(self, action: #selector(self.closeAction(_:)), for: .touchUpInside)
         return closeButton
+    }
+    
+    private static func timeString(from timeInterval: TimeInterval) -> String {
+        let minutes = floor(timeInterval / 60)
+        let seconds = timeInterval - 60 * minutes
+        
+        return String(format: "%02.0f", min(minutes, 59)) + ":" + String(format: "%02.0f", seconds)
     }
 }
 

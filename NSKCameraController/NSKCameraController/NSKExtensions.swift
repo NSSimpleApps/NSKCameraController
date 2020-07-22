@@ -7,6 +7,7 @@
 //
 
 import UIKit
+import Photos
 
 extension UIImage {
     func crop(rect: CGRect, maximumSize: CGSize?) -> UIImage {
@@ -34,10 +35,14 @@ extension UIImage {
         }
     }
     
-    func resize(maximumSize: CGSize) -> UIImage {
-        let imageSize = self.size
-        if case let factor = min(maximumSize.width/imageSize.width, maximumSize.height/imageSize.height), factor < 1, let resized = self.cgImage?.resize(scale: factor) {
-            return UIImage(cgImage: resized, scale: self.scale, orientation: self.imageOrientation).fixOrientation()
+    func resize(maximumSize: CGSize?) -> UIImage {
+        if let maximumSize = maximumSize {
+            let imageSize = self.size
+            if case let factor = min(maximumSize.width/imageSize.width, maximumSize.height/imageSize.height), factor < 1, let resized = self.cgImage?.resize(scale: factor) {
+                return UIImage(cgImage: resized, scale: self.scale, orientation: self.imageOrientation).fixOrientation()
+            } else {
+                return self.fixOrientation()
+            }
         } else {
             return self.fixOrientation()
         }
@@ -69,5 +74,63 @@ extension CGImage {
         UIGraphicsEndImageContext()
         
         return result?.cgImage
+    }
+}
+
+extension Collection {
+    var notEmpty: Bool {
+        return self.isEmpty == false
+    }
+}
+
+extension PHAsset {
+    var isVideo: Bool {
+        return self.mediaType == .video
+    }
+}
+
+
+extension AVCaptureDevice.FlashMode {
+    func next() -> Self {
+        switch self {
+        case .auto:
+            return .on
+        case .on:
+            return .off
+        case .off:
+            return .auto
+        @unknown default:
+            return .auto
+        }
+    }
+    
+    var flashImage: UIImage? {
+        switch self {
+        case .auto:
+            return NSKResourceProvider.flashAutoImage
+        case .on:
+            return NSKResourceProvider.flashOnImage
+        case .off:
+            return NSKResourceProvider.flashOffImage
+        default:
+            return nil
+        }
+    }
+}
+
+extension Collection {
+    @inlinable func fetchValue<Value>(defaultValue: Value, block: (Element) throws -> Value?) rethrows -> Value {
+        for elem in self {
+            if let value = try block(elem) {
+                return value
+            }
+        }
+        return defaultValue
+    }
+}
+
+extension FileManager {
+    var documentDirectory: URL? {
+        return self.urls(for: .documentDirectory, in: .userDomainMask).first
     }
 }

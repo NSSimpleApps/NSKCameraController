@@ -7,23 +7,40 @@
 //
 
 import UIKit
+import Photos
 
 public let NSKCameraControllerErrorDomain = "NSKCameraControllerErrorDomain"
+
 
 public class NSKCameraController: UIViewController {
     public enum ResizingMode: Int {
         case free, saveAspectRatio
     }
-    public enum Source: Int {
-        case camera, photoLibrary
+    public enum Source {
+        public enum MediaType: Int {
+            case image, video, imageAndVideo
+        }
+        case camera(MediaType), photoLibrary(MediaType)
     }
-    public enum NumberOfPhotos: Equatable {
+    public enum NumberOfAttachments: Equatable {
         case single // одно фото
-        case multiply(Int, String) // Int - максимальное число фото, String - заголовок кнопки "Выбрать"
+        case multiply(Int, String) // Int - максимальное число вложений, String - заголовок кнопки "Выбрать"
     }
     public enum ImagePickerResult {
-        case image(UIImage)
-        case images([UIImage])
+        public enum Media {
+            case image(UIImage)
+            case video(UIImage, Data) // превью, данные видео
+            public var image: UIImage {
+                switch self {
+                case .image(let image):
+                    return image
+                case .video(let image, _):
+                    return image
+                }
+            }
+        }
+        case result(Media)
+        case results([Media])
         case cancelled
         case error(Error)
     }
@@ -69,9 +86,15 @@ public class NSKCameraController: UIViewController {
         case limits(Limits)
         
         case resizingMode(ResizingMode)
-        case numberOfPhotos(NumberOfPhotos)
+        case numberOfAttachments(NumberOfAttachments)
         
         case accentColor(UIColor?)
+        
+        case videoMaximumDuration(TimeInterval)
+        
+        case tipString(String)
+        
+        case maxNumberOfVideos(Int)
         
         public func hash(into hasher: inout Hasher) {
             switch self {
@@ -85,16 +108,24 @@ public class NSKCameraController: UIViewController {
                 hasher.combine("limits")
             case .resizingMode:
                 hasher.combine("resizingMode")
-            case .numberOfPhotos:
-                hasher.combine("numberOfPhotos")
+            case .numberOfAttachments:
+                hasher.combine("numberOfAttachments")
             case .accentColor:
                 hasher.combine("accentColor")
+            case .videoMaximumDuration:
+                hasher.combine("videoMaximumDuration")
+            case .tipString:
+                hasher.combine("tipString")
+            case .maxNumberOfVideos:
+                hasher.combine("numberOfVideos")
             }
         }
     }
     public let options: Set<Options>
     public let source: Source
     public let commitBlock: (NSKCameraController, ImagePickerResult) -> Void
+    
+    private var videoEditorHandler: NSKVideoEditorHandler?
     
     public init(source: Source, options: Set<Options>, commitBlock: @escaping (NSKCameraController, ImagePickerResult) -> Void) {
         self.source = source
@@ -113,127 +144,57 @@ public class NSKCameraController: UIViewController {
         self.view.backgroundColor = .black
         
         switch self.source {
-        case .photoLibrary:
-            let maximumNumberOfPhotos: Int
-            let selectButtonTitle: String?
-            if let option = self.options.first(where: { (opt) -> Bool in
-                switch opt {
-                case .numberOfPhotos:
-                    return true
-                default:
-                    return false
-                }
-            }) {
-                switch option {
-                case .numberOfPhotos(let numberOfPhotos):
-                    switch numberOfPhotos {
-                    case .single:
-                        maximumNumberOfPhotos = 1
-                        selectButtonTitle = nil
-                    case .multiply(let value, let title):
-                        maximumNumberOfPhotos = value
-                        selectButtonTitle = title
-                    }
-                default:
-                    maximumNumberOfPhotos = 1
-                    selectButtonTitle = nil
-                }
-            } else {
-                maximumNumberOfPhotos = 1
-                selectButtonTitle = nil
-            }
+        case .photoLibrary(let mediaType):
+            let (maximumNumberOfAttachments, selectButtonTitle) = self.options.fetchValue(defaultValue: (1, nil),
+                                                                                     block: { (opt) -> (Int, String?)? in
+                                                                                        switch opt {
+                                                                                        case .numberOfAttachments(let numberOfAttachments):
+                                                                                            switch numberOfAttachments {
+                                                                                            case .single:
+                                                                                                return (1, nil)
+                                                                                            case .multiply(let value, let title):
+                                                                                                return (value, title)
+                                                                                            }
+                                                                                        default:
+                                                                                            return nil
+                                                                                        }
+            })
             
-            let accentColor: UIColor?
-            if let option = self.options.first(where: { (opt) -> Bool in
+            let accentColor = self.options.fetchValue(defaultValue: nil, block: { (opt) -> UIColor? in
                 switch opt {
-                case .accentColor:
-                    return true
-                default:
-                    return false
-                }
-            }) {
-                switch option {
                 case .accentColor(let color):
-                    accentColor = color
+                    return color
                 default:
-                    accentColor = nil
+                    return nil
                 }
-            } else {
-                accentColor = nil
-            }
+            })
+            let maxNumberOfVideos = self.options.fetchValue(defaultValue: 5, block: { (opt) -> Int? in
+                switch opt {
+                case .maxNumberOfVideos(let maxNumberOfVideos):
+                    return maxNumberOfVideos
+                default:
+                    return nil
+                }
+            })
             
-            let photoLibraryController = NSKPhotoLibraryController(maximumNumberOfPhotos: maximumNumberOfPhotos,
-                                                                   selectButtonTitle: selectButtonTitle,
-                                                                   accentColor: accentColor,
+            let photoLibraryController = NSKPhotoLibraryController(mediaType: mediaType,
+                                                                   maximumNumberOfAttachments: maximumNumberOfAttachments, selectButtonTitle: selectButtonTitle,
+                                                                   accentColor: accentColor, maxNumberOfVideos: maxNumberOfVideos,
                                                                    commitBlock: { conroller, result in
                                                                     guard let nc = conroller.navigationController else { return }
-                                                                    guard let imagePickerController = nc.parent as? NSKCameraController else { return }
+                                                                    guard let imagePickerController = nc.parent as? Self else { return }
                                                                     
                                                                     nc.view.removeFromSuperview()
                                                                     nc.removeFromParent()
                                                                     
-                                                                    switch result {
-                                                                    case .cancelled:
-                                                                        imagePickerController.commitBlock(imagePickerController, .cancelled)
-                                                                    default:
-                                                                        let isConfirmationRequired = imagePickerController.isConfirmationRequired
-                                                                        let maximumSize = imagePickerController.maximumSize
-                                                                        let minimumSize = imagePickerController.minimumSize
-                                                                        switch result {
-                                                                        case .asset(let asset):
-                                                                            NSKImageFetcher.fetchImage(maximumSize: nil, asset: asset,
-                                                                                                       completion: { [weak imagePickerController] (image) in
-                                                                                                        guard let imagePickerController = imagePickerController else { return }
-                                                                                                        if let image = image {
-                                                                                                            if isConfirmationRequired {
-                                                                                                                imagePickerController.initConfirmationDialog(image: image, minimumSize: minimumSize, maximumSize: maximumSize, commitBlock: { imagePickerController, imagePickerResult in
-                                                                                                                    switch imagePickerResult {
-                                                                                                                    case .image(let image):
-                                                                                                                        imagePickerController.commitBlock(imagePickerController, .image(image))
-                                                                                                                    case .cancelled:
-                                                                                                                        imagePickerController.commitBlock(imagePickerController, .cancelled)
-                                                                                                                    }
-                                                                                                                })
-                                                                                                            } else {
-                                                                                                                if let maximumSize = maximumSize {
-                                                                                                                    let resizedImage = image.resize(maximumSize: maximumSize)
-                                                                                                                    imagePickerController.commitBlock(imagePickerController, .image(resizedImage))
-                                                                                                                } else {
-                                                                                                                    imagePickerController.commitBlock(imagePickerController, .image(image))
-                                                                                                                }
-                                                                                                            }
-                                                                                                        } else {
-                                                                                                            imagePickerController.commitBlock(imagePickerController, .error(NSError(domain: NSKCameraControllerErrorDomain, code: -1, userInfo: nil)))
-                                                                                                        }
-                                                                            })
-                                                                        case .assets(let assets):
-                                                                            NSKImageFetcher.fetchImages(maximumSize: nil, assets: assets, completion: { [weak imagePickerController] (images) in
-                                                                                guard let imagePickerController = imagePickerController else { return }
-                                                                                
-                                                                                if isConfirmationRequired, images.isEmpty == false {
-                                                                                    imagePickerController.initConfirmationDialog(initialImages: images, resultedImages: [], minimumSize: minimumSize, maximumSize: maximumSize, completion: { (imagePickerController, resultedImages) in
-                                                                                        if let resultedImages = resultedImages {
-                                                                                            imagePickerController.commitBlock(imagePickerController, .images(resultedImages))
-                                                                                        } else {
-                                                                                            imagePickerController.commitBlock(imagePickerController, .cancelled)
-                                                                                        }
-                                                                                    })
-                                                                                } else {
-                                                                                    let imagesValue: [UIImage]
-                                                                                    if let maximumSize = maximumSize {
-                                                                                        imagesValue = images.map { (image) -> UIImage in
-                                                                                            image.resize(maximumSize: maximumSize)
-                                                                                        }
-                                                                                    } else {
-                                                                                        imagesValue = images
-                                                                                    }
-                                                                                    imagePickerController.commitBlock(imagePickerController, .images(imagesValue))
-                                                                                }
-                                                                            })
-                                                                        default:
-                                                                            return
-                                                                        }
-                                                                    }
+                                                                    let activityIndicatorView = UIActivityIndicatorView(style: .white)
+                                                                    activityIndicatorView.translatesAutoresizingMaskIntoConstraints = false
+                                                                    imagePickerController.view.addSubview(activityIndicatorView)
+                                                                    activityIndicatorView.centerYAnchor.constraint(equalTo: imagePickerController.view.centerYAnchor).isActive = true
+                                                                    activityIndicatorView.centerXAnchor.constraint(equalTo: imagePickerController.view.centerXAnchor).isActive = true
+                                                                    activityIndicatorView.startAnimating()
+                                                                    
+                                                                    imagePickerController.handle(mediaResult: result)
             })
             let navigationController = UINavigationController(rootViewController: photoLibraryController)
             navigationController.navigationBar.barTintColor = .black
@@ -251,9 +212,25 @@ public class NSKCameraController: UIViewController {
             self.addChild(navigationController)
             navigationController.didMove(toParent: self)
             
-        case .camera:
-            let videoCaptureController = NSKVideoCaptureController(commitBlock: { (captureController, result) in
-                guard let cameraController = captureController.parent as? NSKCameraController else {
+        case .camera(let mediaType):
+            let captureType: NSKVideoCaptureController.CaptureType
+            switch mediaType {
+            case .image, .imageAndVideo:
+                captureType = .image
+            case .video:
+                let tip = self.options.fetchValue(defaultValue: "?") { (opt) -> String? in
+                    switch opt {
+                    case .tipString(let tipString):
+                        return tipString
+                    default:
+                        return nil
+                    }
+                }
+                captureType = .video(tip)
+            }
+            let videoCaptureController = NSKVideoCaptureController(captureType: captureType, isCroppingEnabled: self.isCroppingEnabled,
+                commitBlock: { (captureController, result) in
+                guard let cameraController = captureController.parent as? Self else {
                     return
                 }
                 switch result {
@@ -270,22 +247,49 @@ public class NSKCameraController: UIViewController {
                         captureController.view.removeFromSuperview()
                         captureController.removeFromParent()
                         cameraController.initConfirmationDialog(image: image, minimumSize: minimumSize, maximumSize: maximumSize,
-                                                                commitBlock: { (imagePickerController, confimationResult) in
-                                                                    switch confimationResult {
+                                                                commitBlock: { (imagePickerController, confirmationResult) in
+                                                                    switch confirmationResult {
                                                                     case .cancelled:
                                                                         imagePickerController.commitBlock(imagePickerController, .cancelled)
                                                                     case .image(let image):
-                                                                        imagePickerController.commitBlock(imagePickerController, .image(image))
+                                                                        imagePickerController.commitBlock(imagePickerController, .result(.image(image)))
                                                                     }
                         })
                     } else {
-                        if let maximumSize = maximumSize {
-                            let resizedImage = image.resize(maximumSize: maximumSize)
-                            cameraController.commitBlock(cameraController, .image(resizedImage))
-                        } else {
-                            cameraController.commitBlock(cameraController, .image(image))
-                        }
+                        let resizedImage = image.resize(maximumSize: maximumSize)
+                        cameraController.commitBlock(cameraController, .result(.image(resizedImage)))
                     }
+                case .video(let capture):
+                    let url = capture.url
+                    
+                    captureController.view.removeFromSuperview()
+                    captureController.removeFromParent()
+                    
+                    cameraController.initVideoEditor(path: url.path, commitBlock: { (cameraController, videoResult) in
+                        switch videoResult {
+                        case .cancelled:
+                            cameraController.commitBlock(cameraController, .cancelled)
+                        case .error(let error):
+                            cameraController.commitBlock(cameraController, .error(error))
+                        case .result(let rawPreview, let videoData):
+                            let maximumSize = cameraController.maximumSize
+                            let minimumSize = cameraController.minimumSize
+                            
+                            if cameraController.isConfirmationRequired {
+                                cameraController.initConfirmationDialog(image: rawPreview, minimumSize: minimumSize, maximumSize: maximumSize,
+                                                                        commitBlock: { (cameraController, confirmationResult) in
+                                                                            switch confirmationResult {
+                                                                            case .cancelled:
+                                                                                cameraController.commitBlock(cameraController, .cancelled)
+                                                                            case .image(let preview):
+                                                                                cameraController.commitBlock(cameraController, .result(.video(preview, videoData)))
+                                                                            }
+                                })
+                            } else {
+                                cameraController.commitBlock(cameraController, .result(.video(rawPreview.resize(maximumSize: maximumSize), videoData)))
+                            }
+                        }
+                    })
                 }
             })
             let videoCapture = videoCaptureController.view!
@@ -306,34 +310,208 @@ public class NSKCameraController: UIViewController {
         return .lightContent
     }
     
-    private func initChildImagePickerScreen(source: Source) {
+    private func handle(mediaResult: NSKPhotoLibraryController.MediaResult) {
+        switch mediaResult {
+        case .cancelled:
+            self.commitBlock(self, .cancelled)
+        default:
+            let isConfirmationRequired = self.isConfirmationRequired
+            let maximumSize = self.maximumSize
+            let minimumSize = self.minimumSize
+            
+            switch mediaResult {
+            case .asset(let asset):
+                if asset.isVideo {
+                    NSKImageFetcher.fetchVideoUrl(asset: asset, shouldCheckEditing: true,
+                                                  completion: { [weak self] (result) in
+                                                    guard let sSelf = self else { return }
+                                                    
+                                                    switch result {
+                                                    case .success(let url):
+                                                        sSelf.initVideoEditor(path: url.path, commitBlock: { (cameraController, videoResult) in
+                                                            switch videoResult {
+                                                            case .cancelled:
+                                                                cameraController.commitBlock(cameraController, .cancelled)
+                                                            case .error(let error):
+                                                                cameraController.commitBlock(cameraController, .error(error))
+                                                            case .result(let rawPreview, let videoData):
+                                                                if isConfirmationRequired {
+                                                                    cameraController.initConfirmationDialog(image: rawPreview, minimumSize: minimumSize, maximumSize: maximumSize,
+                                                                                                            commitBlock: { (cameraController, confirmationResult) in
+                                                                                                                switch confirmationResult {
+                                                                                                                case .cancelled:
+                                                                                                                    cameraController.commitBlock(cameraController, .cancelled)
+                                                                                                                case .image(let resizedImage):
+                                                                                                                    cameraController.commitBlock(cameraController, .result(.video(resizedImage, videoData)))
+                                                                                                                }
+                                                                    })
+                                                                } else {
+                                                                    let preview = rawPreview.resize(maximumSize: maximumSize)
+                                                                    cameraController.commitBlock(cameraController, .result(.video(preview, videoData)))
+                                                                }
+                                                            }
+                                                        })
+                                                    case .failure(let error):
+                                                        sSelf.commitBlock(sSelf, .error(error))
+                                                    }
+                    })
+                } else {
+                    NSKImageFetcher.fetchImage(maximumSize: isConfirmationRequired ? nil : maximumSize, asset: asset,
+                                               completion: { [weak self] (result) in
+                                                guard let sSelf = self else { return }
+                                                
+                                                switch result {
+                                                case .success(let image):
+                                                    if isConfirmationRequired {
+                                                        sSelf.initConfirmationDialog(image: image, minimumSize: minimumSize, maximumSize: maximumSize,
+                                                                                     commitBlock: { (cameraController, confirmationResult) in
+                                                                                        switch confirmationResult {
+                                                                                        case .cancelled:
+                                                                                            cameraController.commitBlock(cameraController, .cancelled)
+                                                                                        case .image(let resized):
+                                                                                            cameraController.commitBlock(cameraController, .result(.image(resized)))
+                                                                                        }
+                                                        })
+                                                    } else {
+                                                        sSelf.commitBlock(sSelf, .result(.image(image)))
+                                                    }
+                                                case .failure(let error):
+                                                    sSelf.commitBlock(sSelf, .error(error))
+                                                }
+                    })
+                }
+            case .assets(let assets):
+                self.handleConfirmation(with: assets, initialResults: [], isConfirmationRequired: isConfirmationRequired, maximumSize: maximumSize, minimumSize: minimumSize)
+            default:
+                return
+            }
+        }
+    }
+    
+    private func initVideoEditor(path: String, commitBlock: @escaping (NSKCameraController, NSKVideoEditorHandler.VideoResult) -> Void) {
+        let videoMaximumDuration = self.options.fetchValue(defaultValue: 20) { (opt) -> TimeInterval? in
+            switch opt {
+            case .videoMaximumDuration(let value):
+                return value
+            default:
+                return nil
+            }
+        }
         
+        let videoEditorHandler = NSKVideoEditorHandler(commitBlock: { [weak self] (result) in
+            guard let sSelf = self else { return }
+            
+            commitBlock(sSelf, result)
+        })
+        self.videoEditorHandler = videoEditorHandler
+        
+        let videoEditorController = UIVideoEditorController()
+        videoEditorController.videoMaximumDuration = videoMaximumDuration
+        videoEditorController.modalPresentationStyle = .fullScreen
+        videoEditorController.videoPath = path
+        videoEditorController.delegate = videoEditorHandler
+        self.present(videoEditorController, animated: true, completion: nil)
+    }
+    
+    private func _handleConfirmation(with asset: PHAsset, isConfirmationRequired: Bool, maximumSize: CGSize?, minimumSize: CGSize,
+                                     completion: @escaping (NSKCameraController, ImagePickerResult.Media) -> Void) {
+        if asset.isVideo {
+            NSKImageFetcher.fetchVideoUrl(asset: asset, shouldCheckEditing: true,
+                                          completion: { [weak self] (result) in
+                                            guard let sSelf = self else { return }
+                                            
+                                            switch result {
+                                            case .success(let url):
+                                                sSelf.initVideoEditor(path: url.path, commitBlock: { (cameraController, videoResult) in
+                                                    switch videoResult {
+                                                    case .cancelled:
+                                                        cameraController.commitBlock(cameraController, .cancelled)
+                                                    case .error(let error):
+                                                        cameraController.commitBlock(cameraController, .error(error))
+                                                    case .result(let rawPreview, let videoData):
+                                                        if isConfirmationRequired {
+                                                            cameraController.initConfirmationDialog(image: rawPreview, minimumSize: minimumSize, maximumSize: maximumSize,
+                                                                                                    commitBlock: { (cameraController, confirmationResult) in
+                                                                                                        switch confirmationResult {
+                                                                                                        case .cancelled:
+                                                                                                            cameraController.commitBlock(cameraController, .cancelled)
+                                                                                                        case .image(let resizedPreview):
+                                                                                                            completion(cameraController, .video(resizedPreview, videoData))
+                                                                                                        }
+                                                            })
+                                                        } else {
+                                                            completion(cameraController, .video(rawPreview.resize(maximumSize: maximumSize), videoData))
+                                                        }
+                                                    }
+                                                })
+                                            case .failure(let error):
+                                                sSelf.commitBlock(sSelf, .error(error))
+                                            }
+            })
+        } else {
+            NSKImageFetcher.fetchImage(maximumSize: isConfirmationRequired ? nil : maximumSize, asset: asset, completion: { [weak self] (result) in
+                guard let sSelf = self else { return }
+                
+                switch result {
+                case .success(let preview):
+                    if isConfirmationRequired {
+                        sSelf.initConfirmationDialog(image: preview, minimumSize: minimumSize, maximumSize: maximumSize,
+                                                     commitBlock: { (cameraController, confirmationResult) in
+                                                        switch confirmationResult {
+                                                        case .cancelled:
+                                                            cameraController.commitBlock(cameraController, .cancelled)
+                                                        case .image(let resizedImage):
+                                                            completion(cameraController, .image(resizedImage))
+                                                        }
+                        })
+                    } else {
+                        completion(sSelf, .image(preview))
+                    }
+                case .failure(let error):
+                    sSelf.commitBlock(sSelf, .error(error))
+                }
+            })
+        }
+    }
+    
+    private func handleConfirmation(with assets: [PHAsset], initialResults: [ImagePickerResult.Media], isConfirmationRequired: Bool, maximumSize: CGSize?, minimumSize: CGSize) {
+        if let asset = assets.first {
+            self._handleConfirmation(with: asset, isConfirmationRequired: isConfirmationRequired, maximumSize: maximumSize, minimumSize: minimumSize,
+                                     completion: { (cameraController, media) in
+                                        cameraController.handleConfirmation(with: Array(assets.dropFirst()), initialResults: initialResults + [media],
+                                                                            isConfirmationRequired: isConfirmationRequired,
+                                                                            maximumSize: maximumSize, minimumSize: minimumSize)
+            })
+        } else {
+            self.commitBlock(self, .results(initialResults))
+        }
     }
     
     private func initConfirmationDialog(image: UIImage, minimumSize: CGSize, maximumSize: CGSize?, commitBlock: @escaping (NSKCameraController, ConfirmationResult) -> Void) {
-        let resizingModeValue: ResizingMode
-        if let resizingMode = self.options.first(where: { (option) -> Bool in
-            switch option {
-            case .resizingMode:
-                return true
-            default:
-                return false
-            }
-        }) {
-            switch resizingMode {
+        let resizingModeValue = self.options.fetchValue(defaultValue: .free, block: { (opt) -> ResizingMode? in
+            switch opt {
             case .resizingMode(let resizingMode):
-                resizingModeValue = resizingMode
+                return resizingMode
             default:
-                resizingModeValue = .free
+                return nil
             }
-        } else {
-            resizingModeValue = .free
-        }
-        let сonfirmationController = NSKConfirmationController(image: image, isCroppingEnabled: true, isResizingEnabled: true,
+        })
+        
+        let isResizingEnabled = self.options.fetchValue(defaultValue: false,
+                                                        block: { (opt) -> Bool? in
+                                                            switch opt {
+                                                            case .isResizingEnabled(let value):
+                                                                return value
+                                                            default:
+                                                                return nil
+                                                            }
+        })
+        
+        let сonfirmationController = NSKConfirmationController(image: image, isCroppingEnabled: self.isCroppingEnabled, isResizingEnabled: isResizingEnabled,
                                                                resizingMode: resizingModeValue,
                                                                minSize: minimumSize, maxSize: maximumSize,
                                                                commitBlock: { сonfirmationController, image in
-                                                                guard let cameraController = сonfirmationController.parent as? NSKCameraController else {
+                                                                guard let cameraController = сonfirmationController.parent as? Self else {
                                                                     return
                                                                 }
                                                                 сonfirmationController.view.removeFromSuperview()
@@ -378,68 +556,46 @@ public class NSKCameraController: UIViewController {
     }
     
     public var isConfirmationRequired: Bool {
-        let isConfirmationRequired: Bool
-        if let option = self.options.first(where: { (opt) -> Bool in
-            switch opt {
-            case .isConfirmationRequired:
-                return true
-            default:
-                return false
-            }
-        }) {
-            switch option {
-            case .isConfirmationRequired(let isRequired):
-                isConfirmationRequired = isRequired
-            default:
-                isConfirmationRequired = false
-            }
-        } else {
-            isConfirmationRequired = false
-        }
-        return isConfirmationRequired
+        return self.options.fetchValue(defaultValue: false,
+                                       block: { (opt) -> Bool? in
+                                        switch opt {
+                                        case .isConfirmationRequired(let isRequired):
+                                            return isRequired
+                                        default:
+                                            return nil
+                                        }
+        })
     }
     
     public var minimumSize: CGSize {
-        let minimumSizeValue: CGSize
-        if let limits = self.options.first(where: { (opt) -> Bool in
+        return self.options.fetchValue(defaultValue: .zero, block: { (opt) -> CGSize? in
             switch opt {
-            case .limits:
-                return true
-            default:
-                return false
-            }
-        }) {
-            switch limits {
             case .limits(let limits):
-                minimumSizeValue = limits.minSize
+                return limits.minSize
             default:
-                minimumSizeValue = .zero
+                return nil
             }
-        } else {
-            minimumSizeValue = .zero
-        }
-        return minimumSizeValue
+        })
     }
     public var maximumSize: CGSize? {
-        let maximumSizeValue: CGSize?
-        if let limits = self.options.first(where: { (opt) -> Bool in
+        return self.options.fetchValue(defaultValue: nil, block: { (opt) -> CGSize? in
             switch opt {
-            case .limits:
-                return true
-            default:
-                return false
-            }
-        }) {
-            switch limits {
             case .limits(let limits):
-                maximumSizeValue = limits.maxSize
+                return limits.maxSize
             default:
-                maximumSizeValue = nil
+                return nil
             }
-        } else {
-            maximumSizeValue = nil
-        }
-        return maximumSizeValue
+        })
+    }
+    
+    public var isCroppingEnabled: Bool {
+        return self.options.fetchValue(defaultValue: false, block: { (opt) -> Bool? in
+            switch opt {
+            case .isCroppingEnabled(let value):
+                return value
+            default:
+                return nil
+            }
+        })
     }
 }
-

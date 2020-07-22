@@ -20,7 +20,11 @@ let cameraController = NSKCameraController(source: .camera | .photoLibrary, opti
                                                                      .limits(self.settings.limits),
                                                                      .resizingMode(.free | .saveAspectRatio),
                                                                      .numberOfPhotos(.single | .multiply(Int, String)),
-                                                                     .accentColor(.red)],
+                                                                     .accentColor(.red),
+                                                                     .videoMaximumDuration(TimeInterval),
+                                                                     .tipString(String),
+                                                                     .maxNumberOfVideos(Int),
+                                                                     ],
                                                      commitBlock: { [weak self] (imagePickerController, result) in
                                                         switch result {
                                                         case .image(let image):

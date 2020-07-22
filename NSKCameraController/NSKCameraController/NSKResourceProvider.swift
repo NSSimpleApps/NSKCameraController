@@ -47,4 +47,7 @@ class NSKResourceProvider {
     static var captureButtonHighlighted: UIImage? {
         return UIImage(named: "capture-button-highlighted", in: Bundle(for: self.self), compatibleWith: nil)
     }
+    static var triangle: UIImage? {
+        return UIImage(named: "triangle", in: Bundle(for: self.self), compatibleWith: nil)
+    }
 }
