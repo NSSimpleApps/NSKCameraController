@@ -197,6 +197,8 @@ class NSKPhotoLibraryController: UICollectionViewController {
             guard let sSelf = self else { return }
             
             switch status {
+            case .limited:
+                fallthrough
             case .authorized:
                 let options = PHFetchOptions()
                 options.sortDescriptors = [NSSortDescriptor(keyPath: \PHAsset.creationDate, ascending: false)]
@@ -224,7 +226,7 @@ class NSKPhotoLibraryController: UICollectionViewController {
                     ssSelf.shouldDisplaySettingsPlaceholder = true
                     ssSelf.collectionView.reloadData()
                 }
-            @unknown default:
+            default:
                 break
             }
         }

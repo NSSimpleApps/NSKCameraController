@@ -278,16 +278,18 @@ class NSKVideoCameraManager: NSObject {
             
             if let captureSession = sSelf.captureSession, let photoOutput = sSelf.photoOutput {
                 sSelf.imageCapture = completion
-                let photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey : AVVideoCodecJPEG])
+                let photoSettings: AVCapturePhotoSettings
                 if #available(iOS 11.0, *) {
+                    photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey : AVVideoCodecType.jpeg])
                     photoSettings.metadata[kCGImagePropertyOrientation as String] = initialOrientation.rawValue
+                    if #available(iOS 12.0, *) {
+                        photoSettings.isAutoRedEyeReductionEnabled = true
+                    }
                 } else {
+                    photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey : AVVideoCodecJPEG])
                     objc_setAssociatedObject(photoOutput, &kInterfaceOrientation, NSNumber(value: initialOrientation.rawValue), .OBJC_ASSOCIATION_COPY)
                 }
-                if #available(iOS 12.0, *) {
-                    photoSettings.isAutoRedEyeReductionEnabled = true
-                }
-                if let firstAvailablePreviewPhotoPixelFormatTypes = photoSettings.availablePreviewPhotoPixelFormatTypes.first {
+                if let firstAvailablePreviewPhotoPixelFormatTypes = photoSettings.__availablePreviewPhotoPixelFormatTypes.first {
                     photoSettings.previewPhotoFormat = [kCVPixelBufferPixelFormatTypeKey as String: firstAvailablePreviewPhotoPixelFormatTypes]
                 }
                 
