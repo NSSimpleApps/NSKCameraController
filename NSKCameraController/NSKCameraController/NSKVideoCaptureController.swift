@@ -454,7 +454,7 @@ extension NSKVideoCameraManager: AVCapturePhotoCaptureDelegate {
                 DispatchQueue.main.async {
                     imageCapture(.failure(error))
                 }
-            } else if let cgImage = photo.cgImageRepresentation()?.takeUnretainedValue() {
+            } else if let cgImage = photo.cgImageRepresentation() {
                 let interfaceOrientation: UIInterfaceOrientation
                 if let i = photo.metadata[kCGImagePropertyOrientation as String] as? Int, let interfaceOrientationValue = UIInterfaceOrientation(rawValue: i) {
                     interfaceOrientation = interfaceOrientationValue
